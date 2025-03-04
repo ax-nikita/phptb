@@ -34,15 +34,15 @@ function get_user_transactions_balances($user_id, PDO $conn) : array
     SELECT month, SUM(amount) as amount, COUNT(1) as count
     FROM (SELECT t.id                     as tid,
                  strftime('%m', t.trdate) AS month,
-                 SUM(
-                         CASE
-                             WHEN (SELECT COUNT(1)
-                                   FROM user_accounts AS ua_2
-                                   WHERE ua_2.id IN (t.account_to, t.account_from)
-                                   GROUP BY ua_2.user_id LIMIT 1) = 2 THEN 0
-                             WHEN t.account_to = ua.id THEN t.amount
-                             ELSE -t.amount END
-                     )                    AS `amount`
+                 CASE
+                     WHEN (SELECT COUNT(1)
+                           FROM user_accounts AS ua_2
+                           WHERE ua_2.id IN (t.account_to, t.account_from)
+                           GROUP BY ua_2.user_id
+                           LIMIT 1) = 2 THEN 0
+                     WHEN t.account_to = ua.id THEN t.amount
+                     ELSE -t.amount END
+                                          AS `amount`
           FROM user_accounts AS ua
                    INNER JOIN transactions AS t
                               ON
