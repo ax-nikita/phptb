@@ -31,9 +31,9 @@ function get_user_transactions_balances($user_id, PDO $conn) : array
 
     $data = $conn->query(
         "
-    SELECT month, SUM(amount) as amount, COUNT(1) as count
+    SELECT strftime('%m', trdate) AS month, SUM(amount) as amount, COUNT(1) as count
     FROM (SELECT t.id                     as tid,
-                 strftime('%m', t.trdate) AS month,
+                 t.trdate AS trdate,
                  CASE
                      WHEN (SELECT COUNT(1)
                            FROM user_accounts AS ua_2
