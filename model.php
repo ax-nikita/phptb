@@ -1,55 +1,79 @@
 <?php
 
-/**
- * Return list of users.
- */
-function get_users(PDO $conn) : array
-{
-    $data = $conn->query("
-        SELECT 
-            users.id,
-            users.name
-        FROM users
-        WHERE EXISTS(SELECT 1
-                     FROM user_accounts as ua
-                              INNER JOIN transactions AS t
-                                         ON
-                                             t.account_from = ua.id OR t.account_to = ua.id
-             WHERE ua.user_id = users.id)")->fetchAll();
+declare(strict_types=1);
 
-    return array_column($data, 'name', 'id');
+function get_users(PDO $conn): array
+{
+    $statement = $conn->query(
+        'SELECT u.id, u.name
+         FROM users AS u
+         WHERE EXISTS (
+             SELECT 1
+             FROM user_accounts AS a
+             JOIN transactions AS t ON t.account_from = a.id OR t.account_to = a.id
+             WHERE a.user_id = u.id
+         )
+         ORDER BY u.name, u.id'
+    );
+
+    return array_column($statement->fetchAll(PDO::FETCH_ASSOC), 'name', 'id');
 }
 
-/**
- * Return transactions balances of given user.
- */
-function get_user_transactions_balances($user_id, PDO $conn) : array
+function get_transaction_years(PDO $conn): array
 {
-    if (!is_integer($user_id) && $user_id < 0) { // Базовая проверка, она есть и в data.php, но лучше перестраховатся если будем использовать функцию в будущем
+    $years = $conn->query(
+        "SELECT DISTINCT strftime('%Y', trdate) AS year
+         FROM transactions
+         WHERE strftime('%Y', trdate) BETWEEN '0001' AND '9998'
+         ORDER BY year DESC"
+    )->fetchAll(PDO::FETCH_COLUMN);
+
+    return array_map('intval', $years);
+}
+
+function get_user_transactions_balances(int $user_id, PDO $conn, ?int $year = null): array
+{
+    if ($user_id <= 0) {
         return [];
     }
 
-    $data = $conn->query(
-        "
-    SELECT strftime('%m', trdate) AS month, SUM(amount) as amount, COUNT(1) as count
-    FROM (SELECT t.id                     as tid,
-                 t.trdate AS trdate,
-                 CASE
-                     WHEN (SELECT COUNT(1)
-                           FROM user_accounts AS ua_2
-                           WHERE ua_2.id IN (t.account_to, t.account_from)
-                           GROUP BY ua_2.user_id
-                           LIMIT 1) = 2 THEN 0
-                     WHEN t.account_to = ua.id THEN t.amount
-                     ELSE -t.amount END
-                                          AS `amount`
-          FROM user_accounts AS ua
-                   INNER JOIN transactions AS t
-                              ON
-                                  t.account_from = ua.id OR t.account_to = ua.id
-          WHERE ua.user_id = $user_id
-          GROUP BY tid)
-    GROUP BY month")->fetchAll(PDO::FETCH_ASSOC);
+    $year = $year ?? (get_transaction_years($conn)[0] ?? (int) date('Y'));
 
-    return $data;
+    if ($year < 1 || $year > 9998) {
+        throw new InvalidArgumentException('Invalid year.');
+    }
+
+    $statement = $conn->prepare(
+        "SELECT strftime('%m', t.trdate) AS month,
+                SUM(
+                    (CASE WHEN dst.user_id = :credit_user THEN 1 ELSE 0 END
+                     - CASE WHEN src.user_id = :debit_user THEN 1 ELSE 0 END)
+                    * CAST(ROUND(t.amount * 100) AS INTEGER)
+                ) AS amount_cents,
+                COUNT(*) AS count
+         FROM transactions AS t
+         JOIN user_accounts AS src ON src.id = t.account_from
+         JOIN user_accounts AS dst ON dst.id = t.account_to
+         WHERE (src.user_id = :source_user OR dst.user_id = :target_user)
+           AND t.trdate >= :start_date
+           AND t.trdate < :end_date
+         GROUP BY month
+         ORDER BY month"
+    );
+
+    foreach ([':credit_user', ':debit_user', ':source_user', ':target_user'] as $parameter) {
+        $statement->bindValue($parameter, $user_id, PDO::PARAM_INT);
+    }
+
+    $statement->bindValue(':start_date', sprintf('%04d-01-01', $year));
+    $statement->bindValue(':end_date', sprintf('%04d-01-01', $year + 1));
+    $statement->execute();
+
+    return array_map(static function (array $row): array {
+        return [
+            'month' => $row['month'],
+            'amount' => (float) ($row['amount_cents'] / 100),
+            'count' => (int) $row['count'],
+        ];
+    }, $statement->fetchAll(PDO::FETCH_ASSOC));
 }
